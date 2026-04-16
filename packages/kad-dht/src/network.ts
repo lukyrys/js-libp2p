@@ -272,7 +272,19 @@ export class Network extends TypedEventEmitter<NetworkEvents> implements Startab
    */
   async _writeMessage (stream: Stream, msg: Partial<Message>, options: AbortOptions): Promise<void> {
     const pb = pbStream(stream)
-    await pb.write(msg, Message, options)
+    try {
+      await pb.write(msg, Message, options)
+    } finally {
+      // Unwrap pbStream to detach its stream event listeners (message,
+      // close, remoteCloseWrite). Without this, every outgoing DHT message
+      // leaks a listener set + readBuffer on the underlying stream, which
+      // causes significant RSS growth in DHT server mode over time.
+      try {
+        pb.unwrap()
+      } catch (err) {
+        this.log.error('error unwrapping pbStream (writeMessage) - %e', err)
+      }
+    }
   }
 
   /**
@@ -280,10 +292,19 @@ export class Network extends TypedEventEmitter<NetworkEvents> implements Startab
    */
   async _writeReadMessage (stream: Stream, msg: Partial<Message>, options: AbortOptions): Promise<Message> {
     const pb = pbStream(stream)
+    let message: Message
 
-    await pb.write(msg, Message, options)
-
-    const message = await pb.read(Message, options)
+    try {
+      await pb.write(msg, Message, options)
+      message = await pb.read(Message, options)
+    } finally {
+      // See _writeMessage for rationale.
+      try {
+        pb.unwrap()
+      } catch (err) {
+        this.log.error('error unwrapping pbStream (writeReadMessage) - %e', err)
+      }
+    }
 
     // tell any listeners about new peers we've seen
     message.closer.forEach(peerData => {
