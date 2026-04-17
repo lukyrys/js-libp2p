@@ -2,7 +2,6 @@ import { createScalableCuckooFilter } from '@libp2p/utils'
 import { anySignal } from 'any-signal'
 import merge from 'it-merge'
 import { setMaxListeners } from 'main-event'
-import { pEvent } from 'p-event'
 import { raceSignal } from 'race-signal'
 import { toString as uint8ArrayToString } from 'uint8arrays/to-string'
 import {
@@ -148,9 +147,33 @@ export class QueryManager implements Startable {
       if (this.routingTable.size === 0 && !this.allowQueryWithZeroPeers) {
         log('routing table was empty, waiting for some peers before running%s query', options.isSelfQuery === true ? ' self' : '')
         // wait to discover at least one DHT peer that isn't us
-        await pEvent(this.routingTable, 'peer:add', {
-          signal,
-          filter: (event) => !this.peerId.equals(event.detail)
+        // Use explicit listener management instead of pEvent — in some runtimes
+        // (observed in Bun/JSC), p-event's `{once: true}` abort-listener is
+        // retained on the native AbortSignal after resolve, anchoring the
+        // pEventMultiple closure scope (items[], rejectHandler, cancel) via
+        // the GC root. Every query leaked a PeerInfo + Multiaddr[] set.
+        // Explicit removeEventListener in a finally block avoids the leak
+        // across runtime implementations.
+        await new Promise<void>((resolve, reject) => {
+          const onPeer = (event: CustomEvent<PeerId>): void => {
+            if (this.peerId.equals(event.detail)) return
+            cleanup()
+            resolve()
+          }
+          const onAbort = (): void => {
+            cleanup()
+            reject(signal.reason ?? new Error('Aborted'))
+          }
+          const cleanup = (): void => {
+            this.routingTable.removeEventListener('peer:add', onPeer)
+            signal.removeEventListener('abort', onAbort)
+          }
+          if (signal.aborted) {
+            reject(signal.reason ?? new Error('Aborted'))
+            return
+          }
+          this.routingTable.addEventListener('peer:add', onPeer)
+          signal.addEventListener('abort', onAbort, { once: true })
         })
         log('routing table has peers, continuing with%s query', options.isSelfQuery === true ? ' self' : '')
       }
