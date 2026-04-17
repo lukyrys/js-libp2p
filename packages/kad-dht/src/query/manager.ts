@@ -168,12 +168,16 @@ export class QueryManager implements Startable {
             this.routingTable.removeEventListener('peer:add', onPeer)
             signal.removeEventListener('abort', onAbort)
           }
-          if (signal.aborted) {
-            reject(signal.reason ?? new Error('Aborted'))
-            return
-          }
           this.routingTable.addEventListener('peer:add', onPeer)
           signal.addEventListener('abort', onAbort, { once: true })
+          // Check aborted AFTER registering listeners to avoid a race where
+          // `abort` fires between a pre-check and addEventListener. If the
+          // signal is already aborted, invoke onAbort synchronously (it is
+          // idempotent because removeEventListener on an unregistered
+          // listener is a no-op).
+          if (signal.aborted) {
+            onAbort()
+          }
         })
         log('routing table has peers, continuing with%s query', options.isSelfQuery === true ? ' self' : '')
       }
