@@ -85,6 +85,7 @@ export class IdentifyPush extends AbstractIdentify implements Startable, Identif
 
           yield async () => {
             let stream: Stream | undefined
+            let pb: any
             const signal = AbortSignal.timeout(self.timeout)
 
             setMaxListeners(Infinity, signal)
@@ -95,7 +96,7 @@ export class IdentifyPush extends AbstractIdentify implements Startable, Identif
                 runOnLimitedConnection: self.runOnLimitedConnection
               })
 
-              const pb = pbStream(stream, {
+              pb = pbStream(stream, {
                 maxDataLength: self.maxMessageSize
               }).pb(IdentifyMessage)
 
@@ -117,6 +118,9 @@ export class IdentifyPush extends AbstractIdentify implements Startable, Identif
               const log = stream?.log.newScope('identify-push')
               log?.error('could not push identify update to peer', err)
               stream?.abort(err)
+            } finally {
+              // Unwrap pbStream to detach its stream event listeners.
+              try { pb?.unwrap().unwrap() } catch (err) { /* ignore */ }
             }
           }
         }
@@ -148,8 +152,14 @@ export class IdentifyPush extends AbstractIdentify implements Startable, Identif
       maxDataLength: this.maxMessageSize
     }).pb(IdentifyMessage)
 
-    const message = await pb.read(options)
-    await stream.close(options)
+    let message
+    try {
+      message = await pb.read(options)
+      await stream.close(options)
+    } finally {
+      // Unwrap pbStream to detach its stream event listeners.
+      try { pb.unwrap().unwrap() } catch (err) { /* ignore */ }
+    }
 
     await consumeIdentifyMessage(this.components.peerStore, this.components.events, log, connection, message)
 
