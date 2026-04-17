@@ -272,7 +272,19 @@ export class Network extends TypedEventEmitter<NetworkEvents> implements Startab
    */
   async _writeMessage (stream: Stream, msg: Partial<Message>, options: AbortOptions): Promise<void> {
     const pb = pbStream(stream)
-    await pb.write(msg, Message, options)
+    try {
+      await pb.write(msg, Message, options)
+    } finally {
+      // Unwrap pbStream to detach its stream event listeners (message, close,
+      // remoteCloseWrite). Without this, every outgoing DHT message leaks a
+      // listener set + readBuffer that anchors the stream until the connection
+      // closes, keeping Multiaddr/PeerInfo references alive across queries.
+      try {
+        pb.unwrap()
+      } catch (err: any) {
+        this.log.error('error unwrapping pbStream (writeMessage) - %e', err)
+      }
+    }
   }
 
   /**
@@ -280,10 +292,19 @@ export class Network extends TypedEventEmitter<NetworkEvents> implements Startab
    */
   async _writeReadMessage (stream: Stream, msg: Partial<Message>, options: AbortOptions): Promise<Message> {
     const pb = pbStream(stream)
-
-    await pb.write(msg, Message, options)
-
-    const message = await pb.read(Message, options)
+    let message: Message
+    try {
+      await pb.write(msg, Message, options)
+      message = await pb.read(Message, options)
+    } finally {
+      // See _writeMessage for rationale — unwrap is required to detach
+      // pbStream event listeners on every path.
+      try {
+        pb.unwrap()
+      } catch (err: any) {
+        this.log.error('error unwrapping pbStream (writeReadMessage) - %e', err)
+      }
+    }
 
     // tell any listeners about new peers we've seen
     message.closer.forEach(peerData => {
